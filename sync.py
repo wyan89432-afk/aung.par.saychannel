@@ -1,22 +1,33 @@
-import os,sys,json,subprocess,requests
-YOUTUBE_CHANNEL=os.environ.get("YOUTUBE_CHANNEL")
-TOKEN=os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT=os.environ.get("TELEGRAM_CHAT_ID")
-FILE="processed_ids.json"
-def main():
- if not all([YOUTUBE_CHANNEL,TOKEN,CHAT]): sys.exit("Missing secrets")
- done=set(json.load(open(FILE))) if os.path.exists(FILE) else set()
- r=subprocess.run(["yt-dlp","--flat-playlist","--playlist-end","5","-J",f"https://www.youtube.com/{YOUTUBE_CHANNEL}/videos"],capture_output=True,text=True,check=True)
- videos=json.loads(r.stdout).get("entries",[]) or []
- new=[v for v in videos if v.get("id") not in done][:1]
- for v in new:
-  vid=v["id"]; path=f"{vid}.mp4"
-  try:
-   subprocess.run(["yt-dlp","-f","bestvideo[height<=360]+bestaudio/best[height<=360]","--merge-output-format","mp4","-o",path,f"https://www.youtube.com/watch?v={vid}"],check=True)
-   with open(path,"rb") as f:
-    q=requests.post(f"https://api.telegram.org/bot{TOKEN}/sendVideo",data={"chat_id":CHAT,"caption":v.get("title","New video")},files={"video":f},timeout=300)
-   q.raise_for_status(); done.add(vid)
-  finally:
-   if os.path.exists(path): os.remove(path)
- json.dump(sorted(done),open(FILE,"w"),indent=2)
-if __name__=="__main__": main()
+import json, os, sys
+from pathlib import Path
+import requests
+from yt_dlp import YoutubeDL
+
+channel=os.environ.get("YOUTUBE_CHANNEL","@htunmin7245")
+token=os.environ.get("TELEGRAM_BOT_TOKEN")
+chat_id=os.environ.get("TELEGRAM_CHAT_ID")
+if not token or not chat_id: sys.exit("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secrets")
+
+state_file=Path("processed_ids.json")
+try:
+    processed=set(json.loads(state_file.read_text(encoding="utf-8"))) if state_file.exists() else set()
+except Exception:
+    processed=set()
+
+with YoutubeDL({"quiet":True,"extract_flat":True,"playlistend":10}) as ydl:
+    info=ydl.extract_info(f"https://www.youtube.com/{channel}/videos",download=False)
+
+entries=[v for v in (info.get("entries") or []) if v and v.get("id")]
+entries.reverse()
+new=[v for v in entries if v["id"] not in processed]
+
+for v in new:
+    url=f"https://www.youtube.com/watch?v={v['id']}"
+    text=f"🎬 {v.get('title','New YouTube video')}\n\n{url}"
+    r=requests.post(f"https://api.telegram.org/bot{token}/sendMessage",json={"chat_id":chat_id,"text":text,"disable_web_page_preview":False},timeout=30)
+    r.raise_for_status()
+    processed.add(v["id"])
+    print("Sent:",url)
+
+state_file.write_text(json.dumps(sorted(processed)[-500:],indent=2),encoding="utf-8")
+print("Done. New links:",len(new))
